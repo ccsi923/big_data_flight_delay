@@ -1,0 +1,10 @@
+{
+    "Origin_aggregated": "mean",
+    "Dest_aggregated": "mean",
+    "EngineType_aggregated": "binary",
+    "AircraftType_aggregated": "binary",
+    "Manufacturer_aggregated": "binary",
+    "Model_aggregated": "mean",
+    "Year_aggregated": "binary",
+    "PlaneIssueYear_aggregated": "mean"
+}

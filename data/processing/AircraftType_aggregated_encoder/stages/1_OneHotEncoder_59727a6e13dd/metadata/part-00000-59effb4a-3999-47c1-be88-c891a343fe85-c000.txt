@@ -1,0 +1,1 @@
+{"class":"org.apache.spark.ml.feature.OneHotEncoderModel","timestamp":1767745050323,"sparkVersion":"4.1.0","uid":"OneHotEncoder_59727a6e13dd","paramMap":{"dropLast":true,"handleInvalid":"keep","inputCol":"AircraftType_index","outputCol":"AircraftType_binary"},"defaultParamMap":{"dropLast":true,"handleInvalid":"error","outputCol":"OneHotEncoder_59727a6e13dd__output"}}
