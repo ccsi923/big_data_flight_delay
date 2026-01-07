@@ -1,0 +1,114 @@
+{
+    "CRSElapsedTime": {
+        "extra_nulls": [],
+        "fill_value": 121.0
+    },
+    "DepDelay": {
+        "extra_nulls": [],
+        "fill_value": 0.0
+    },
+    "Distance": {
+        "extra_nulls": [],
+        "fill_value": 651.0
+    },
+    "TaxiOut": {
+        "extra_nulls": [],
+        "fill_value": 14.0
+    },
+    "DepTime_minutes": {
+        "extra_nulls": [],
+        "fill_value": 1079.0
+    },
+    "CRSDepTime_minutes": {
+        "extra_nulls": [],
+        "fill_value": 1060.0
+    },
+    "CRSArrTime_minutes": {
+        "extra_nulls": [],
+        "fill_value": 1058.0
+    },
+    "Month_sin": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": 0.49999999999999994
+    },
+    "Month_cos": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": 0.5000000000000001
+    },
+    "DayofMonth_sin": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": -2.4492935982947064e-16
+    },
+    "DayofMonth_cos": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": 0.8207634412072763
+    },
+    "DayOfWeek_sin": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": 0.43388373911755823
+    },
+    "DayOfWeek_cos": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": -0.900968867902419
+    },
+    "Origin": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "ATL"
+    },
+    "Dest": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "ATL"
+    },
+    "EngineType": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "Turbo-Fan"
+    },
+    "AircraftType": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "Fixed Wing Multi-Engine"
+    },
+    "Manufacturer": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "BOEING"
+    },
+    "Model": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "MD-88"
+    },
+    "Year": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": 2008
+    },
+    "PlaneIssueYear": {
+        "extra_nulls": [
+            "None"
+        ],
+        "fill_value": "1998"
+    }
+}
