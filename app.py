@@ -1,642 +1,415 @@
+"""
+Flight Delay Prediction Spark Application
+
+This application:
+1. Loads raw flight and plane data.
+2. Loads a pre-trained regression model (Best Model).
+3. Preprocesses the data using saved metadata (encoding/imputing) to match training conditions.
+4. Generates predictions for flight delays.
+5. Evaluates model performance (RMSE, MAE, R2) and saves predictions.
+   (Automatically drops Vector columns to allow CSV saving).
+
+Usage:
+    spark-submit app.py --raw_flights ./data/2008.csv.bz2 --raw_plane ./data/plane-data.csv --out ./output/predictions.csv
+"""
+
 import argparse
-import traceback
-from pyspark.ml.evaluation import RegressionEvaluator
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.ml import Pipeline, PipelineModel
-from pyspark.ml.feature import *
-from pyspark.sql import functions as F
 import json
-from pyspark.sql.types import IntegerType, DoubleType, FloatType, StructField, Row, StructType
-from pyspark.sql.functions import col, sum
-from math import pi, cos, sin
+import logging
 import os
-from pyspark.sql.dataframe import DataFrame
-
-TARGET_COLUMN = "ArrDelay"
-# Path to Parquet file
-FLIGHT_PARQUET_PATH = './data/flights.parquet'
-PLANES_PARQUET_PATH = './data/planes.parquet'
-PROCESSING_DIR = "data/processing/"
-# Path to schema file
-PLANE_SCHEMA_PATH = './data/plane-schema.json'
-FLIGHT_SCHEMA_PATH = './data/flight-schema.json'
-# Load paths
-FLIGHT_RAW_PATH = './data/*.csv.bz2'
-PLANE_RAW_PATH = './data/plane-data.csv'
-# Result paths
-PROCESSED_DIR = './data/processed/'
-PROCESSED_TRAIN_PARQUET = os.path.join(PROCESSED_DIR, "train.parquet")
-PROCESSED_TEST_PARQUET = os.path.join(PROCESSED_DIR, "test.parquet")
-PROCESSED_SCHEMA = os.path.join(PROCESSED_DIR, "schema.json")
-
-
-def custom_mean_encoding(df, mapping, feature):
-    df = df.join(mapping, how="left", on=feature)
-    m = df.approxQuantile(col="ArrDelay", probabilities=[0.5], relativeError=0.001)[0]
-    df = df.withColumn(
-        f"{feature}_mean_enc", F.coalesce(F.col(f"{feature}_mean_enc"), F.lit(m))
-    )
-    return df
-
-
-def load_csv_save_parquet(spark, raw_path, parquet_path, schema_path) -> DataFrame:
-    # Read csv
-    df = spark.read.csv(
-        raw_path,
-        header=True,
-        inferSchema=True,
-        nullValue="NA"
-    )
-
-    schema = df.schema
-    schema_json = schema.json()
-
-    # Write the schema JSON to a file
-    with open(schema_path, 'w') as f:
-        f.write(schema_json)
-
-    # Save DataFrame as Parquet for future use
-    df.write.mode("overwrite").parquet(parquet_path)
-
-    df = spark.read.parquet(parquet_path, schema=schema)
-    return df
-
-
-def load_parquet(spark, parquet_path, schema_file) -> DataFrame:
-    with open(schema_file, 'r') as f:
-        schema_json = f.read()
-
-    # Deserialize the JSON string back into a StructType object
-    schema_from_file = StructType.fromJson(json.loads(schema_json))
-
-    df = spark.read.parquet(parquet_path, schema=schema_from_file)
-    return df
-
-
-def load(spark, parquet_path, schema_file_path, wildcard_path) -> (DataFrame, DataFrame):
-    if os.path.exists(parquet_path):
-        # If Parquet exists, load it using the schema files
-        df = load_parquet(spark, parquet_path, schema_file_path)
-        df_planes = load_parquet(spark, PLANES_PARQUET_PATH, PLANE_SCHEMA_PATH)
-    else:
-        # If Parquet file does not exist, read CSV files and save as Parquet
-        df = load_csv_save_parquet(spark, wildcard_path, parquet_path, schema_file_path)
-        df_planes = load_csv_save_parquet(spark, PLANE_RAW_PATH, PLANES_PARQUET_PATH, PLANE_SCHEMA_PATH)
-    return df, df_planes
-
-
-def custom_polar_time_encode(df):
-    print(f"Transforming Month, DayofMonth and DayofWeek to polar coordinates.")
-
-    def polar_encoding(value, max_value):
-        frac = value / max_value
-        circle = 2 * pi
-        angle = frac * circle
-        return cos(angle), sin(angle)
-
-    # Register UDF for polar encoding
-    polar_udf = udf(polar_encoding, "struct<cos:double, sin:double>")
-
-    # Apply polar encoding on 'Month', 'DayofMonth', 'DayOfWeek'
-    df = df.withColumn("Month_polar", polar_udf(col("Month"), lit(12))) \
-        .withColumn("DayofMonth_polar", polar_udf(col("DayofMonth"),
-                                                  when(col("Month") == 2, lit(28))  # February (can adjust for leap year
-                                                  # if needed)
-                                                  .when(col("Month").isin([4, 6, 9, 11]),
-                                                        lit(30))  # Months with 30 days
-                                                  .otherwise(lit(31)))) \
-        .withColumn("DayOfWeek_polar", polar_udf(col("DayOfWeek"), lit(7)))
-    # df = df.drop(*["DayofMonth", "DayOfWeek", "Month"])
-
-    # Subdivide feature pairs into two columns each
-    df = df.withColumn("Month_cos", col("Month_polar.cos")) \
-        .withColumn("Month_sin", col("Month_polar.sin")) \
-        .withColumn("DayofMonth_cos", col("DayofMonth_polar.cos")) \
-        .withColumn("DayofMonth_sin", col("DayofMonth_polar.sin")) \
-        .withColumn("DayOfWeek_cos", col("DayOfWeek_polar.cos")) \
-        .withColumn("DayOfWeek_sin", col("DayOfWeek_polar.sin"))
-
-    df = df.drop(*["DayofMonth_polar", "DayOfWeek_polar", "Month_polar"])
-
-    return df
-
-
-def static_preprocess(df, df_planes):
-    df_planes = df_planes.withColumnRenamed("tailnum", "TailNum")
-    df = df.join(df_planes, on="TailNum", how="inner")
-
-    print("Schema before static preprocessing")
-    df.printSchema()
-
-    forbidden_cols = [
-        "ArrTime",
-        "ActualElapsedTime",
-        "AirTime",
-        "TaxiIn",
-        "Diverted",
-        "CarrierDelay",
-        "WeatherDelay",
-        "NASDelay",
-        "SecurityDelay",
-        "LateAircraftDelay"
-    ]
-    df = df.drop(*forbidden_cols)
-
-    target_column = "ArrDelay"
-
-    # List of Ordinal features
-    cyclic_ordinal_time = [
-        'Month',
-        'DayofMonth',
-        'DayOfWeek'
-    ]
-    non_cyclic_ordinal_time = ['Year', 'PlaneIssueYear']
-
-    # List of Time features
-    quant_time_features = [
-        'DepTime',
-        'CRSDepTime',
-        'CRSArrTime'
-    ]
-
-    # List of Quantitative features
-    quantitative_features = [
-        'CRSElapsedTime',
-        'DepDelay',
-        'Distance',
-        'TaxiOut'
-    ]
-
-    # List of Nominal features
-    nominal_features = [
-        'UniqueCarrier',
-        'FlightNum',
-        'TailNum',
-        'Origin',
-        'Dest',
-        'Cancelled',
-        'CancellationCode',
-        'EngineType',
-        'AircraftType',
-        'Manufacturer',
-        'Model',
-        "issue_date", "status",
-        "type"
-    ]
-
-    # WE ARE PREDICTING DELAY. REMOVE CANCELLED FLIGHTS
-    df = df.filter("Cancelled != 1")
-
-    # DROP NOMINALS WITH TOO MANY GROUPS OR THAT ARE USELESS
-    useless_fea = ["TailNum", "FlightNum", "UniqueCarrier", "CancellationCode", "Cancelled", "issue_date", "status",
-                   "type"]
-    for fea in useless_fea:
-        print(f"Discarding {fea}.")
-        nominal_features.remove(fea)
-    df = df.drop(*useless_fea)
-
-    # RENAME VARIABLES
-    df = df.withColumnRenamed("year", "PlaneIssueYear")
-    df = df.withColumnRenamed("engine_type", "EngineType")
-    df = df.withColumnRenamed("aircraft_type", "AircraftType")
-    df = df.withColumnRenamed("model", "Model")
-    df = df.withColumnRenamed("manufacturer", "Manufacturer")
-
-    # CAST QUANTITATIVE COLUMNS TO NUMERIC, SOME ARE STRINGS
-    for column in quantitative_features + [target_column]:
-        print(f"Forcing {column} to be read as integer.")
-        df = df.withColumn(column, col(column).cast(IntegerType()))
-    df = df.dropna(subset=[target_column])
-    null_count = df.filter(col(target_column).isNull()).count()
-    print(f"Number of nulls in {target_column}: {null_count}")
-
-    # CAST HHMM COLUMNS TO MINUTE QUANTITIES
-    for column in quant_time_features:  # They are strings hhmm
-        print(f"Casting {column} from hhmm to minutes (integer).")
-        df = df.withColumn(
-            column + "_minutes",
-            (F.col(column).substr(1, 2).cast("int") * 60 + F.col(column).substr(3, 2).cast("int"))
-        )
-        quantitative_features.append(column + "_minutes")
-    df = df.drop(*quant_time_features)
-
-    df = custom_polar_time_encode(df)
-    ordinal_features = []
-    ordinal_features += [fea + "_sin" for fea in cyclic_ordinal_time]
-    ordinal_features += [fea + "_cos" for fea in cyclic_ordinal_time]
-
-    print("Schema after static preprocessing:")
-    df.printSchema()
-    return df, quantitative_features, ordinal_features, nominal_features + non_cyclic_ordinal_time
-
-
-def train_preprocess(df, nominal_features, ordinal_features, quantitative_features, dir_save_params,
-                     cardinality_threshold, frequency_threshold, high_cardinality_strategy):
-    spark = SparkSession.builder.getOrCreate()
-    # -------------------------------- IMPUTER --------------------------------
-    # This should be the column, the values considered nulls, and the value to be used to fill
-
-    print("Analyzing medians")
-    imputer_maps = {
-        fea: {'extra_nulls': [],
-              'fill_value': df.approxQuantile(col=fea, probabilities=[0.5], relativeError=0.025)[0]} for fea in
-        quantitative_features
-    }
-    print("Current imputing dictionary: ")
-    print(imputer_maps)
-    print("Analyzing modes")
-    imputer_maps.update({
-        fea: {'extra_nulls': ['None'],
-              'fill_value': df.groupby(fea).count().orderBy("count", ascending=False).first()[0]} for fea in
-        ordinal_features + nominal_features
-    })
-    print("Filling dictionary: ")
-    print(imputer_maps)
-    # Convert to JSON and save it
-    json_data = json.dumps(imputer_maps, indent=4)
-
-    # Save to a file
-    with open(os.path.join(dir_save_params, 'imputer_maps.json'), 'w') as f:
-        f.write(json_data)
-
-    # ----------------------------- NOMINAL ENCODER ----------------------------
-
-    def get_sufficiently_frequent(df, fea, frequency_threshold=frequency_threshold):
-        total_count = df.count()
-
-        # Group by the column and calculate the normalized frequency
-        proportions = df.groupBy(fea).agg(
-            (F.count("*") / total_count).alias(f"{fea}_frequency")
-        )
-        result = proportions.filter(F.col(f"{fea}_frequency") > frequency_threshold).select(fea).collect()
-        result = [row[fea] for row in result]
-        return result
-
-    feature_to_sufficiently_frequent = {
-        fea: get_sufficiently_frequent(df, fea) for fea in nominal_features
-    }
-    print("Sufficiently frequent values per feature: ")
-    print(feature_to_sufficiently_frequent)
-
-    # Map between feature and the encoder and new column name
-    nominal_encode_type = {}
-    nominal_encoders = {}
-    new_nominal = []
-    for fea in nominal_features:
-        elems_to_preserve = feature_to_sufficiently_frequent[fea]
-        df = df.withColumn(
-            f"{fea}_aggregated",
-            (F.when(~F.col(fea).isin(elems_to_preserve), lit("Other")).otherwise(F.col(fea)))
-        )
-
-        if len(elems_to_preserve) + 1 <= cardinality_threshold:
-            print(f"Performing One-Hot-Encoding to feature {fea}")
-            indexer = StringIndexer(inputCol=f"{fea}_aggregated", outputCol=f"{fea}_index", handleInvalid='keep')
-            encoder = OneHotEncoder(inputCol=f"{fea}_index", outputCol=f"{fea}_binary", handleInvalid='keep',
-                                    dropLast=True)
-            pipeline = Pipeline(stages=[indexer, encoder])
-            pipeline_model = pipeline.fit(df)
-            nominal_encode_type[f"{fea}_aggregated"] = "binary"
-            new_nominal.append(f"{fea}_binary")
-            pipeline_model.save(os.path.join(dir_save_params, f'{fea}_aggregated_encoder'))
-        elif high_cardinality_strategy == "ignore":
-            print(f"Ignoring feature {fea}")
-        elif high_cardinality_strategy == "mean":
-            print(f"Performing Mean-Target-Encoding to feature {fea}")
-            mapping_df = df.groupBy(f"{fea}_aggregated").agg(F.avg("ArrDelay").alias(f"{fea}_mean_enc"))
-            if "Other" not in mapping_df.select(f"{fea}_aggregated").distinct().collect():
-                mean = float(df.groupBy(TARGET_COLUMN).agg(F.avg("ArrDelay")).collect()[0][0])
-                print(mean)
-                new_row = Row(f"{fea}_aggregated", f"{fea}_mean_enc")("Other", mean)
-                print(new_row)
-                # Convert the new row to a DataFrame with the same schema as mapping_df
-                new_row_df = spark.createDataFrame([new_row], mapping_df.schema)
-                print(new_row_df.show())
-                mapping_df = mapping_df.union(new_row_df)
-                print(mapping_df.show())
-            mapping_df.write.csv(os.path.join(dir_save_params, f'{fea}_aggregated_encoder.csv'), header=True)
-            new_nominal.append(f"{fea}_mean_enc")
-            nominal_encode_type[f"{fea}_aggregated"] = "mean"
-        else:
-            raise NotImplementedError(f"Not implemented strategy {high_cardinality_strategy}")
-
-    print("Feature to encoder types:")
-    print(nominal_encode_type)
-    print("Final nominal variables:")
-    print(new_nominal)
-
-    # Convert to JSON and save it
-    json_data = json.dumps(nominal_encode_type, indent=4)
-    with open(os.path.join(dir_save_params, 'encode_types.json'), 'w') as f:
-        f.write(json_data)
-
-    json_data = json.dumps(feature_to_sufficiently_frequent, indent=4)
-    with open(os.path.join(dir_save_params, 'non_aggregated.json'), 'w') as f:
-        f.write(json_data)
-
-    # -------------------------------- VECTORIZER --------------------------------
-    # Quantitative feature assembly
-    quant_assembler = VectorAssembler(
-        inputCols=quantitative_features,
-        outputCol="quant_features_vector"
-    )
-
-    # Assemble encoded nominal features
-    nominal_assembler = VectorAssembler(
-        inputCols=new_nominal,
-        outputCol="nominal_features_vector"
-    )
-
-    ordinal_assembler = VectorAssembler(
-        inputCols=ordinal_features,
-        outputCol="ordinal_features_vector"
-    )
-
-    # Final feature vector
-    final_assembler = VectorAssembler(
-        inputCols=["quant_features_vector", "nominal_features_vector", "ordinal_features_vector"],
-        outputCol="features"
-    )
-
-    # Create a pipeline
-    pipeline = Pipeline(stages=[ordinal_assembler,
-                                quant_assembler,
-                                nominal_assembler,
-                                final_assembler
-                                ])
-    vectorizer = pipeline.fit(df)
-    vectorizer.save(os.path.join(dir_save_params, 'vectorizer'))
-    # -------------------------------- VECTORIZER --------------------------------
-
-
-def dynamic_preprocess(df, nominal_features, ordinal_features, quantitative_features, dir_load_params):
-    # -------------------------------- IMPUTER --------------------------------
-    with open(os.path.join(dir_load_params, 'imputer_maps.json'), 'r') as f:
-        imputer_maps = json.load(f)
-
-    for fea in quantitative_features + ordinal_features + nominal_features:
-        if len(imputer_maps[fea]['extra_nulls']) > 0:
-            df = df.withColumn(fea, when(df[fea].isin(imputer_maps[fea]['extra_nulls']), lit(None)).otherwise(df[fea]))
-
-        if df.filter(col(fea).isNull()).count() > 0:
-            value = imputer_maps[fea]['fill_value']
-            print(f"Imputing {fea} with {value}")
-            df = df.fillna(value, subset=fea)
-
-    # ----------------------------- NOMINAL ENCODER ----------------------------
-    with open(os.path.join(dir_load_params, 'encode_types.json'), 'r') as f:
-        encode_types = json.load(f)
-    with open(os.path.join(dir_load_params, 'non_aggregated.json'), 'r') as f:
-        fea_2_non_aggregated = json.load(f)
-
-    for fea, non_aggregated in fea_2_non_aggregated.items():
-        df = df.withColumn(
-            f"{fea}_aggregated",
-            (F.when(~F.col(fea).isin(non_aggregated), lit("Other")).otherwise(F.col(fea)))
-        )
-
-    for fea, encode_type in encode_types.items():
-        if encode_type == 'binary':
-            encoder = PipelineModel.load(os.path.join(dir_load_params, f'{fea}_encoder'))
-            df = encoder.transform(df)
-        elif encode_type == 'mean':
-            encoder = SparkSession.builder.getOrCreate().read.csv(os.path.join(dir_load_params, f'{fea}_encoder.csv'),
-                                                                  header=True, inferSchema=True)
-            df = df.join(encoder, on=fea, how='left')
-            new_var = f"{fea}_mean_enc".replace("_aggregated", "")
-            imput_value = encoder.filter(encoder[fea] == "Other").select(new_var).collect()[0][0]
-            print(f"Using the following encoder for {fea}")
-            print(encoder.show(10))
-            print(f"Imputing unrecognized values in {fea} with 'Other'->{imput_value}")
-            df = df.fillna(imput_value, subset=new_var)
-        else:
-            raise NotImplementedError(f"Not implemented encode type {encode_type}")
-
-    # ------------------------------ VECTORIZER --------------------------------
-    vectorizer = PipelineModel.load(os.path.join(dir_load_params, 'vectorizer'))
-    df = vectorizer.transform(df)
-    return df
-
-
-def assure_existence_directory(directory_path):
-    # Check if the directory exists
-    if not os.path.exists(directory_path):
-        os.makedirs(directory_path)
-
-
-def preprocess_fit_and_transform(df, df_planes, dir_save_params="./data/"):
-    df, quantitative_features, ordinal_features, nominal_features = static_preprocess(df, df_planes)
-
-    if len(os.listdir(dir_save_params)) == 0:
-        print("TRAINING DYNAMIC PREPROCESSING PARAMETERS")
-        train_preprocess(df, nominal_features, ordinal_features, quantitative_features, dir_save_params,
-                         cardinality_threshold=10, frequency_threshold=0.02, high_cardinality_strategy="mean")
-    else:
-        print("DYNAMIC PREPROCESSING PARAMETERS FOUND. SKIPPING LEARNING.")
-    df = dynamic_preprocess(df, nominal_features, ordinal_features, quantitative_features, dir_save_params)
-    return df
-
-
-def split_and_preprocess(df, df_planes, train_frac=0.8, dir_save_params="./data/"):
-    train_df, test_df = df.randomSplit([train_frac, 1 - train_frac], seed=42)
-    train_df = preprocess_fit_and_transform(train_df, df_planes, dir_save_params=dir_save_params)
-
-    print("TESTING DATA PROCESSING")
-    test_df, quantitative_features, ordinal_features, nominal_features = static_preprocess(test_df, df_planes)
-    test_df = dynamic_preprocess(test_df, nominal_features, ordinal_features, quantitative_features, dir_save_params)
-    return train_df, test_df
-
-
-def validation_preprocess(df, df_planes, dir_save_params="./data/"):
-    df, quantitative_features, ordinal_features, nominal_features = static_preprocess(df, df_planes)
-    df = dynamic_preprocess(df, nominal_features, ordinal_features, quantitative_features, dir_save_params)
-    return df
-
-
-def main(n_partitions=10, debug=False):
-    spark = (SparkSession.builder.appName("MachineLearningProject")
-             .config("spark.executor.memory", "4g")
-             .config("spark.driver.memory", "48g")
-             .config("spark.memory.fraction", "0.8")
-             .config("spark.memory.storageFraction", "0.3")
-             .config("spark.driver.maxResultSize", "4g")
-             .config("spark.sql.caseSensitive", "true")
-             .config("spark.sql.debug.maxToStringFields", "200")
-             # .config("spark.local.dir", "./temp/")
-             .getOrCreate())
-
-    if not os.path.exists(PROCESSED_TRAIN_PARQUET):
-        df, df_planes = load(spark, FLIGHT_PARQUET_PATH, PLANE_SCHEMA_PATH, FLIGHT_RAW_PATH)
-        df = df.repartition(n_partitions)
-
-        if debug:
-            fraction = 0.01  # Adjust the fraction to select 10% of rows
-            df = df.sample(withReplacement=True, fraction=fraction)
-            df = df.repartition(1)
-
-        # train_df, test_df = complete_preprocess(df, df_planes, train_frac=0.8)
-        assure_existence_directory(PROCESSING_DIR)
-        train_df, test_df = split_and_preprocess(df, df_planes, train_frac=0.8, dir_save_params=PROCESSING_DIR)
-        print("Finished preprocessing")
-        print(train_df.head())
-        print(test_df.head())
-
-        print(f"Saving schema to {PROCESSED_SCHEMA}")
-        assure_existence_directory(PROCESSED_DIR)
-        schema_json = train_df.schema.json()
-        with open(PROCESSED_SCHEMA, 'w') as f:
-            f.write(schema_json)
-        test_df.write.mode('overwrite').parquet(PROCESSED_TEST_PARQUET)
-        train_df.write.mode('overwrite').parquet(PROCESSED_TRAIN_PARQUET)
-    else:
-        with open(PROCESSED_SCHEMA, 'r') as f:
-            schema_json = f.read()
-
-        schema = StructType.fromJson(json.loads(schema_json))
-
-        test_df = spark.read.parquet(PROCESSED_TEST_PARQUET, schema=schema)
-        train_df = spark.read.parquet(PROCESSED_TRAIN_PARQUET, schema=schema)
-
-        print(test_df.head())
-        print(train_df.head())
-    spark.stop()
-
-
-def validate(data, model_path, output_path):
+import shutil
+import sys
+import traceback
+from math import cos, pi, sin
+
+# Spark Imports
+from pyspark.ml import PipelineModel
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.linalg import VectorUDT
+from pyspark.sql import DataFrame, SparkSession, functions as F
+from pyspark.sql.functions import col, lit, udf, when
+from pyspark.sql.types import StringType
+
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+
+# --- Configuration Constants ---
+DEFAULT_MODEL_PATH = "best_model/retrained_best_model"
+DEFAULT_PROCESSING_PARAMS_DIR = "best_model/processing/"
+TEMP_DIR = "./temp_app/"
+
+
+class DataLoader:
     """
-    Loads trained models from disk, generates predictions on new data, evaluates model performance,
-    and saves the predictions to CSV files.
-
-    Parameters:
-    -----------
-    data (pyspark.sql.DataFrame):
-        Input Spark DataFrame containing:
-        - All feature columns used during training
-        - 'ArrDelay' column if evaluation metrics are needed
-        DataFrame should be preprocessed using the same steps as training data
-
-    model_path (str):
-        Directory path containing the saved models
-        Each subdirectory should contain a PipelineModel saved by build_and_train_model()
-
-    output_path (str):
-        Directory path where prediction CSV files will be saved
-        One CSV file will be created for each model with format: {model_name}_pred.csv
-
-    Evaluation Metrics:
-    ------------------
-    For each model, calculates:
-    - RMSE (Root Mean Square Error)
-    - MAE (Mean Absolute Error)
-    - R² (R-squared score)
-
-    Output Files:
-    ------------
-    Creates CSV files containing:
-    - Original columns (excluding engineered features)
-    - Prediction column with model's delay predictions
-    - Excludes intermediate columns (*_features, scaledFeatures)
-
-    Returns:
-        None
+    Handles reading raw CSV data, schema management, and intermediate Parquet storage.
     """
-    # Load the trained model
-    name = " ".join(model_path.split('_')[1:])
-    model_folder = model_path
-    print(f"Loading model: {model_folder}")
-    model = PipelineModel.load(model_folder)
+    def __init__(self, spark: SparkSession, temp_dir: str):
+        self.spark = spark
+        self.temp_dir = temp_dir
+        os.makedirs(self.temp_dir, exist_ok=True)
 
-    # Make predictions on the input data
-    print("Validating model...")
-    predictions = model.transform(data)
-    rmse_evaluator = RegressionEvaluator(labelCol="ArrDelay", predictionCol="prediction", metricName="rmse")
-    metrics = {}
-    metrics['rmse'] = rmse_evaluator.evaluate(predictions)
-    print(f"{name} - Root Mean Square Error (RMSE) on test data: {metrics['rmse']}")
+    def load_csv_and_cache(self, raw_path: str, name: str) -> DataFrame:
+        """
+        Reads a CSV, infers schema, saves to Parquet for performance, and reloads.
+        """
+        try:
+            parquet_path = os.path.join(self.temp_dir, f"{name}.parquet")
+            schema_path = os.path.join(self.temp_dir, f"{name}_schema.json")
 
-    # Mean Absolute Error (MAE)
-    mae_evaluator = RegressionEvaluator(labelCol="ArrDelay", predictionCol="prediction", metricName="mae")
-    metrics['mae'] = mae_evaluator.evaluate(predictions)
-    print(f"{name} - Mean Absolute Error (MAE) on test data: {metrics['mae']}")
+            logger.info(f"Reading raw data from: {raw_path}")
+            df = self.spark.read.csv(
+                raw_path,
+                header=True,
+                inferSchema=True,
+                nullValue="NA"
+            )
 
-    # R-Squared (R²)
-    r2_evaluator = RegressionEvaluator(labelCol="ArrDelay", predictionCol="prediction", metricName="r2")
-    metrics['r2'] = r2_evaluator.evaluate(predictions)
-    print(f"{name} - R-Squared (R²) on test data: {metrics['r2']}")
-    # Save predictions to the specified output path
+            # Save schema for consistency
+            with open(schema_path, 'w') as f:
+                f.write(df.schema.json())
 
-    print(f"Saving predictions to {output_path}")
-    old_columns = [col for col in predictions.columns if "_" not in col]
-    predictions = predictions.select(old_columns).drop(*["features", "scaledFeatures"])
-    predictions.write.mode("overwrite").csv(output_path, header=True)
-    print(f"Predictions saved to: {output_path}")
+            # Write to parquet to standardize types and speed up downstream ops
+            df.write.mode("overwrite").parquet(parquet_path)
+
+            # Reload with strict schema
+            df_parquet = self.spark.read.schema(df.schema).parquet(parquet_path)
+            return df_parquet
+
+        except Exception as e:
+            logger.error(f"Failed to load data from {raw_path}: {e}")
+            raise
 
 
-def main(debug=True):
+class Preprocessor:
     """
-    Main function to execute the pipeline workflow.
-    Accepts command-line arguments for dynamic input/output handling.
+    Encapsulates all data cleaning, feature engineering, and transformation logic.
+    Ensures that test data is processed exactly like the training data.
     """
+    def __init__(self, params_dir: str):
+        self.params_dir = params_dir
+        self.cyclic_ordinal_time = ['Month', 'DayofMonth', 'DayOfWeek']
+        self.quant_time_features = ['DepTime', 'CRSDepTime', 'CRSArrTime']
+        self.quantitative_features = ['CRSElapsedTime', 'DepDelay', 'Distance', 'TaxiOut']
+        self.nominal_features = [
+            'UniqueCarrier', 'FlightNum', 'TailNum', 'Origin', 'Dest', 'Cancelled',
+            'CancellationCode', 'EngineType', 'AircraftType', 'Manufacturer', 'Model',
+            "issue_date", "status", "type"
+        ]
+        self.non_cyclic_ordinal_time = ['Year', 'PlaneIssueYear']
+
+    def _cast_columns_safely(self, df: DataFrame, columns: list, target_type="int") -> DataFrame:
+        """Safely casts columns to avoid runtime errors with 'NA' strings."""
+        for col_name in columns:
+            df = df.withColumn(col_name, F.expr(f"try_cast({col_name} as {target_type})"))
+        return df
+
+    def _polar_time_encode(self, df: DataFrame) -> DataFrame:
+        """Transforms cyclic time features into polar coordinates (sin/cos)."""
+        logger.info("Applying polar encoding to time features...")
+
+        def polar_calc(value, max_val):
+            if value is None: return None, None
+            angle = (value / max_val) * 2 * pi
+            return float(cos(angle)), float(sin(angle))
+
+        polar_udf = udf(polar_calc, "struct<cos:double, sin:double>")
+
+        df = df.withColumn("Month_polar", polar_udf(col("Month"), lit(12))) \
+            .withColumn("DayofMonth_polar", polar_udf(col("DayofMonth"),
+                                                      when(col("Month") == 2, lit(28))
+                                                      .when(col("Month").isin([4, 6, 9, 11]), lit(30))
+                                                      .otherwise(lit(31)))) \
+            .withColumn("DayOfWeek_polar", polar_udf(col("DayOfWeek"), lit(7)))
+
+        # Unpack struct columns
+        for base in ["Month", "DayofMonth", "DayOfWeek"]:
+            df = df.withColumn(f"{base}_cos", col(f"{base}_polar.cos")) \
+                   .withColumn(f"{base}_sin", col(f"{base}_polar.sin"))
+
+        return df.drop("Month_polar", "DayofMonth_polar", "DayOfWeek_polar")
+
+    def static_transform(self, df_flights: DataFrame, df_planes: DataFrame) -> (DataFrame, list, list, list):
+        """
+        Performs stateless transformations: joins, cleaning, casting, feature engineering.
+        """
+        logger.info("Starting static preprocessing...")
+
+        # 1. Standardization and Join
+        df_planes = df_planes.withColumnRenamed("tailnum", "TailNum")
+        df = df_flights.join(df_planes, on="TailNum", how="inner")
+
+        # 2. Filter Cancelled
+        df = df.withColumn("Cancelled", col("Cancelled").cast("string"))
+        df = df.filter(col("Cancelled") != "1")
+
+        # 3. Drop forbidden leakage columns and useless features
+        forbidden = [
+            "ArrTime", "ActualElapsedTime", "AirTime", "TaxiIn", "Diverted",
+            "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay"
+        ]
+        useless = ["TailNum", "FlightNum", "UniqueCarrier", "CancellationCode", "Cancelled",
+                   "issue_date", "status", "type"]
+
+        df = df.drop(*(forbidden + useless))
+
+        # 4. Renaming
+        rename_map = {
+            "year": "PlaneIssueYear", "engine_type": "EngineType",
+            "aircraft_type": "AircraftType", "model": "Model", "manufacturer": "Manufacturer"
+        }
+        for old, new in rename_map.items():
+            df = df.withColumnRenamed(old, new)
+
+        # 5. Safe Casting & Null Handling
+        target_col = "ArrDelay"
+        cols_to_cast = self.quantitative_features + [target_col]
+
+        logger.info("Sanitizing quantitative columns...")
+        df = self._cast_columns_safely(df, cols_to_cast, "int")
+        df = df.dropna(subset=[target_col])
+
+        # 6. Time Column Processing
+        logger.info("Processing time columns...")
+        # Handle 'NA' strings in time features
+        for t_col in self.quant_time_features:
+            df = df.withColumn(t_col, when(F.trim(col(t_col)) == "NA", None).otherwise(col(t_col)))
+
+            # Convert HHMM string to minutes
+            df = df.withColumn(
+                f"{t_col}_minutes",
+                (F.expr(f"try_cast(substring({t_col}, 1, 2) as int)") * 60 +
+                 F.expr(f"try_cast(substring({t_col}, 3, 2) as int)"))
+            ).fillna(0, subset=[f"{t_col}_minutes"])
+
+            self.quantitative_features.append(f"{t_col}_minutes")
+
+        df = df.drop(*self.quant_time_features)
+
+        # 7. Polar Encoding
+        df = self._polar_time_encode(df)
+        ordinal_feats = [f"{f}_{s}" for f in self.cyclic_ordinal_time for s in ['sin', 'cos']]
+
+        # Define nominals
+        final_nominal = ["Origin", "Dest", "EngineType", "AircraftType", "Manufacturer", "Model"]
+        all_nominals = final_nominal + self.non_cyclic_ordinal_time
+
+        # Force all nominal columns to StringType
+        logger.info("Casting nominal features to String...")
+        for col_name in all_nominals:
+            if col_name in df.columns:
+                df = df.withColumn(col_name, col(col_name).cast("string"))
+
+        return df, self.quantitative_features, ordinal_feats, all_nominals
+
+    def dynamic_transform(self, df: DataFrame, nominal: list, ordinal: list, quantitative: list) -> DataFrame:
+        """
+        Applies stateful transformations (Imputing, Encoding, Vectorizing) using saved metadata.
+        """
+        logger.info("Applying dynamic preprocessing using saved parameters...")
+        spark = SparkSession.builder.getOrCreate()
+
+        # 1. Imputation
+        imputer_path = os.path.join(self.params_dir, 'imputer_maps.json')
+        if os.path.exists(imputer_path):
+            with open(imputer_path, 'r') as f:
+                imputer_maps = json.load(f)
+
+            for fea in quantitative + ordinal + nominal:
+                if fea not in df.columns: continue
+                if fea in imputer_maps:
+                    fill_val = imputer_maps[fea]['fill_value']
+                    extra_nulls = imputer_maps[fea]['extra_nulls']
+
+                    if extra_nulls:
+                        # --- FIX: Type-safe Null Checking ---
+                        # Prevent comparing Double columns (sin/cos) with String 'None'
+                        is_string = isinstance(df.schema[fea].dataType, StringType)
+                        if is_string:
+                             df = df.withColumn(fea, when(col(fea).isin(extra_nulls), lit(None)).otherwise(col(fea)))
+                        else:
+                             # For Numeric columns, filter out strings like "None" before check
+                             valid_numeric_nulls = [x for x in extra_nulls if isinstance(x, (int, float))]
+                             if valid_numeric_nulls:
+                                 df = df.withColumn(fea, when(col(fea).isin(valid_numeric_nulls), lit(None)).otherwise(col(fea)))
+
+                    df = df.fillna(fill_val, subset=[fea])
+
+        # 2. Nominal Encoding
+        encode_meta_path = os.path.join(self.params_dir, 'encode_types.json')
+        freq_meta_path = os.path.join(self.params_dir, 'non_aggregated.json')
+
+        if os.path.exists(encode_meta_path) and os.path.exists(freq_meta_path):
+            with open(encode_meta_path, 'r') as f: encode_types = json.load(f)
+            with open(freq_meta_path, 'r') as f: fea_freqs = json.load(f)
+
+            # Aggregate rare categories
+            # --- FIX: Match Notebook Suffix '_agg' instead of '_aggregated' ---
+            for fea, valid_cats in fea_freqs.items():
+                if fea in df.columns:
+                    df = df.withColumn(f"{fea}_agg",
+                                       when(col(fea).isin(valid_cats), col(fea)).otherwise(lit("Other")))
+
+            # Apply Encoders
+            for agg_fea, method in encode_types.items():
+                # --- FIX: Match Notebook Key Generation ---
+                # Key is "Year_agg", so replace "_agg" to get "Year"
+                original_fea = agg_fea.replace("_agg", "")
+
+                if method == 'binary':
+                    # --- FIX: Match Notebook File Name f'{fea}_encoder' ---
+                    path = os.path.join(self.params_dir, f'{original_fea}_encoder')
+                    if os.path.exists(path):
+                        model = PipelineModel.load(path)
+                        df = model.transform(df)
+                    else:
+                        logger.warning(f"Binary encoder not found at {path}")
+
+                elif method == 'mean':
+                    # --- FIX: Match Notebook File Name f'{fea}_mean_map.csv' ---
+                    path = os.path.join(self.params_dir, f'{original_fea}_mean_map.csv')
+                    if os.path.exists(path):
+                        mapping = spark.read.csv(path, header=True, inferSchema=True)
+
+                        # Rename "mean_enc" column to avoid ambiguity
+                        mean_col_name = f"{original_fea}_mean_enc"
+                        if "mean_enc" in mapping.columns:
+                            mapping = mapping.withColumnRenamed("mean_enc", mean_col_name)
+
+                        # Join on the aggregated column (e.g., Year_agg)
+                        df = df.join(mapping, on=agg_fea, how='left')
+
+                        # Fill unknown categories with 0 (Global Mean approximation)
+                        df = df.fillna(0.0, subset=[mean_col_name])
+                    else:
+                        logger.warning(f"Mean map not found at {path}")
+
+        # 3. Vector Assembler
+        cols_path = os.path.join(self.params_dir, 'feature_columns.json')
+        if os.path.exists(cols_path):
+            with open(cols_path, 'r') as f:
+                feature_cols = json.load(f)
+
+            existing_cols = [c for c in feature_cols if c in df.columns]
+
+            # --- DEBUG: Log missing features if any ---
+            if len(existing_cols) < len(feature_cols):
+                missing = set(feature_cols) - set(existing_cols)
+                logger.error(f"WARNING: The following features are MISSING from the dataset: {missing}")
+                logger.error("This will likely cause a Vector Size Mismatch error in the model.")
+
+            logger.info(f"Assembling {len(existing_cols)} features into vector...")
+
+            assembler = VectorAssembler(inputCols=existing_cols, outputCol="features", handleInvalid="skip")
+            df = assembler.transform(df)
+
+        return df
+
+
+class ModelHandler:
+    """
+    Manages loading the pre-trained model and performing predictions/evaluation.
+    """
+    def __init__(self, model_path: str):
+        self.model_path = model_path
+
+    def predict_and_evaluate(self, df: DataFrame, output_csv_path: str):
+        """
+        Loads model, transforms data, calculates metrics, and saves predictions.
+        AUTOMATICALLY DROPS VECTOR COLUMNS to allow saving to CSV.
+        """
+        if not os.path.exists(self.model_path):
+            logger.error(f"Model path does not exist: {self.model_path}")
+            return
+
+        logger.info(f"Loading model from {self.model_path}")
+        model = PipelineModel.load(self.model_path)
+
+        logger.info("Generating predictions...")
+        predictions = model.transform(df)
+
+        # Evaluation
+        logger.info("Evaluating performance...")
+        metrics = {}
+        for metric in ["rmse", "mae", "r2"]:
+            evaluator = RegressionEvaluator(labelCol="ArrDelay", predictionCol="prediction", metricName=metric)
+            value = evaluator.evaluate(predictions)
+            metrics[metric] = value
+            logger.info(f"Model Performance - {metric.upper()}: {value}")
+
+        # Saving Results
+        output_dir = os.path.dirname(output_csv_path)
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"Saving predictions to {output_csv_path}")
+
+        # Identify and remove Vector columns
+        cols_to_save = []
+        for field in predictions.schema.fields:
+            if isinstance(field.dataType, VectorUDT):
+                continue
+            if field.name in ["features", "scaledFeatures"]:
+                continue
+            cols_to_save.append(field.name)
+
+        if "prediction" in cols_to_save:
+            cols_to_save.remove("prediction")
+            cols_to_save.append("prediction")
+
+        predictions.select(cols_to_save).write.mode("overwrite").option("header", "true").csv(output_csv_path)
+        logger.info("Process completed successfully.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Spark Flight Delay Prediction")
+    parser.add_argument("--raw_flights", type=str, default="./data/2003.csv.bz2", help="Path to raw flight CSV/BZ2")
+    parser.add_argument("--raw_plane", type=str, default="./training_data/flight_data/plane-data.csv", help="Path to raw plane data CSV")
+    parser.add_argument("--out", type=str, default="./output/predictions.csv", help="Output path for prediction CSV")
+    parser.add_argument("--model_path", type=str, default=DEFAULT_MODEL_PATH, help="Path to trained model directory")
+    parser.add_argument("--params_dir", type=str, default=DEFAULT_PROCESSING_PARAMS_DIR, help="Path to preprocessing metadata")
+
+    args = parser.parse_args()
+
     try:
-        print("Running runnable...")
+        # Initialize Spark
+        spark = SparkSession.builder \
+            .appName("FlightDelayPredictor") \
+            .config("spark.sql.caseSensitive", "true") \
+            .getOrCreate()
+        spark.sparkContext.setLogLevel("WARN")
 
-        parser = argparse.ArgumentParser(description="Flight Delay Prediction Application")
-        parser.add_argument("--raw_plane", type=str, required=False,
-                            help="Path to load the raw CSV data on plane data", default="./data/plane-data.csv")
-        parser.add_argument("--out", type=str, required=False,
-                            help="Path to the produced prediction CSV files", default="./out.csv")
-        parser.add_argument("--raw_flights", type=str, required=False, default="./data/2008.csv.bz2",
-                            help="Path to load the raw CSV data on trips used to predict delay")
+        # 1. Load Data
+        loader = DataLoader(spark, TEMP_DIR)
+        df_planes = loader.load_csv_and_cache(args.raw_plane, "planes")
+        df_flights = loader.load_csv_and_cache(args.raw_flights, "flights")
 
-        args = parser.parse_args()
-        print(args)
-
-        # Start Spark Session
-        if not debug:
-            spark = SparkSession.builder.appName("FlightDelayPipeline").getOrCreate()
-            spark.sparkContext.setLogLevel("WARN")
-        else:
-            spark = (SparkSession.builder.appName("FlightDelayPipeline")
-                     .config("spark.executor.memory", "4g")
-                     .config("spark.driver.memory", "48g")
-                     .config("spark.memory.fraction", "0.8")
-                     .config("spark.memory.storageFraction", "0.3")
-                     .config("spark.driver.maxResultSize", "4g")
-                     .config("spark.sql.caseSensitive", "true")
-                     .config("spark.sql.debug.maxToStringFields", "200").getOrCreate())
-
-        # Paths provided by args
-        plane_raw_path = args.raw_plane
-        flight_raw_path = args.raw_flights
-        aux_dir = "./temp/"
-
-        # Ensure the aux directory exists
-        os.makedirs(aux_dir, exist_ok=True)
-
-        # Define paths within aux_dir
-        plane_parquet_path = os.path.join(aux_dir, "planes.parquet")
-        plane_schema_path = os.path.join(aux_dir, "plane_schema.json")
-        flight_parquet_path = os.path.join(aux_dir, "flights.parquet")
-        flight_schema_path = os.path.join(aux_dir, "flight_schema.json")
-
-        print(f"Reading files {plane_raw_path} and {flight_raw_path}")
-        df_planes = load_csv_save_parquet(spark, plane_raw_path, plane_parquet_path, plane_schema_path)
+        # Repartition
         df_planes = df_planes.repartition(10)
-        df = load_csv_save_parquet(spark, flight_raw_path, flight_parquet_path, flight_schema_path)
+        df_flights = df_flights.repartition(20)
 
-        preprocessing_dir = "./best_model/processing/"
-        print("Preprocessing data...")
-        val_df = validation_preprocess(df, df_planes, preprocessing_dir)
+        # 2. Preprocess Data
+        preprocessor = Preprocessor(args.params_dir)
+        df_clean, quant, ordinal, nominal = preprocessor.static_transform(df_flights, df_planes)
+        df_final = preprocessor.dynamic_transform(df_clean, nominal, ordinal, quant)
 
-        model_path = "./best_model/retrained_Linear_Regression"
-        print("Validating model with data...")
-        validate(val_df, model_path, args.out)
+        # 3. Model Prediction & Evaluation
+        model_handler = ModelHandler(args.model_path)
+        model_handler.predict_and_evaluate(df_final, args.out)
 
     except Exception as e:
-        print("An error occurred:", e)
+        logger.error("Critical failure in application execution.")
         traceback.print_exc()
-
+        sys.exit(1)
+    finally:
+        # Cleanup temp directory
+        if os.path.exists(TEMP_DIR):
+            shutil.rmtree(TEMP_DIR, ignore_errors=True)
 
 if __name__ == "__main__":
     main()
