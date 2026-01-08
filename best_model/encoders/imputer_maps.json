@@ -1,0 +1,86 @@
+{
+    "CRSElapsedTime": {
+        "fill_value": 121.0,
+        "extra_nulls": []
+    },
+    "DepDelay": {
+        "fill_value": 0.0,
+        "extra_nulls": []
+    },
+    "Distance": {
+        "fill_value": 657.0,
+        "extra_nulls": []
+    },
+    "TaxiOut": {
+        "fill_value": 14.0,
+        "extra_nulls": []
+    },
+    "DepTime_minutes": {
+        "fill_value": 810.0,
+        "extra_nulls": []
+    },
+    "CRSDepTime_minutes": {
+        "fill_value": 790.0,
+        "extra_nulls": []
+    },
+    "CRSArrTime_minutes": {
+        "fill_value": 910.0,
+        "extra_nulls": []
+    },
+    "Origin": {
+        "fill_value": "ATL",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "Dest": {
+        "fill_value": "ATL",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "EngineType": {
+        "fill_value": "Turbo-Fan",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "AircraftType": {
+        "fill_value": "Fixed Wing Multi-Engine",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "Manufacturer": {
+        "fill_value": "BOEING",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "Model": {
+        "fill_value": "MD-88",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "Year": {
+        "fill_value": 2008,
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    },
+    "PlaneIssueYear": {
+        "fill_value": "1998",
+        "extra_nulls": [
+            "None",
+            "NA"
+        ]
+    }
+}

@@ -1,1 +1,0 @@
-{"Origin_agg": "mean", "Dest_agg": "mean", "EngineType_agg": "binary", "AircraftType_agg": "binary", "Manufacturer_agg": "binary", "Model_agg": "mean", "Year_agg": "binary", "PlaneIssueYear_agg": "mean"}

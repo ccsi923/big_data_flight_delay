@@ -1,1 +1,0 @@
-["CRSElapsedTime", "DepDelay", "Distance", "TaxiOut", "DepTime_minutes", "CRSDepTime_minutes", "CRSArrTime_minutes", "Month_sin", "Month_cos", "DayofMonth_sin", "DayofMonth_cos", "DayOfWeek_sin", "DayOfWeek_cos", "Origin_mean_enc", "Dest_mean_enc", "EngineType_bin", "AircraftType_bin", "Manufacturer_bin", "Model_mean_enc", "Year_bin", "PlaneIssueYear_mean_enc"]

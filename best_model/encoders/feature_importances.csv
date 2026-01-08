@@ -1,0 +1,71 @@
+Model,Feature,Importance
+LinearReg,CRSElapsedTime,0.23368739722299436
+LinearReg,DepDelay,0.9471350133945959
+LinearReg,Distance,0.02503600508630398
+LinearReg,TaxiOut,0.9362846986120452
+LinearReg,DepTime_minutes,0.00020621607778690724
+LinearReg,CRSDepTime_minutes,0.0014772655212537044
+LinearReg,CRSArrTime_minutes,0.00045511590291518296
+LinearReg,Month_sin,0.562899832378954
+LinearReg,Month_cos,0.3620893029770126
+LinearReg,DayOfWeek_sin,0.10343009792013724
+LinearReg,DayOfWeek_cos,0.295104376056753
+LinearReg,DayofMonth_sin,0.2198194879648664
+LinearReg,DayofMonth_cos,0.13295244675436593
+LinearReg,Origin_mean_enc,0.4945027607621317
+LinearReg,Dest_mean_enc,0.0443893734189693
+LinearReg,EngineType_vec_Turbo-Fan,0.015550109293137939
+LinearReg,EngineType_vec_Turbo-Jet,0.2807306230647691
+LinearReg,EngineType_vec_Other,1.721380908530638
+LinearReg,EngineType_vec_Turbo-Prop,2.062771899731753
+LinearReg,AircraftType_vec_Fixed Wing Multi-Engine,0.1138643442202445
+LinearReg,AircraftType_vec_Other,0.11386434066145608
+LinearReg,Manufacturer_vec_BOEING,0.37423545338633757
+LinearReg,Manufacturer_vec_MCDONNELL DOUGLAS,0.9932470809866861
+LinearReg,Manufacturer_vec_AIRBUS INDUSTRIE,0.17380324485535445
+LinearReg,Manufacturer_vec_Other,0.8073034446253795
+LinearReg,Manufacturer_vec_EMBRAER,0.4176835511555134
+LinearReg,Manufacturer_vec_BOMBARDIER INC,1.8891957936733634
+LinearReg,Manufacturer_vec_MCDONNELL DOUGLAS AIRCRAFT CO,0.3343828051408363
+LinearReg,Manufacturer_vec_AIRBUS,0.5467667747603367
+LinearReg,Manufacturer_vec_DOUGLAS,1.4676222940123884
+LinearReg,Manufacturer_vec_CANADAIR,1.592804620887066
+LinearReg,Model_mean_enc,0.21603574279378487
+LinearReg,Year_vec_2008,0.238702406938564
+LinearReg,Year_vec_1999,0.23870240693605957
+LinearReg,PlaneIssueYear_mean_enc,0.1199552669727077
+RandomForest,CRSElapsedTime,0.0013496662779761246
+RandomForest,DepDelay,0.8084344223900729
+RandomForest,Distance,0.001345463320575899
+RandomForest,TaxiOut,0.07176888774563753
+RandomForest,DepTime_minutes,0.044120864502503576
+RandomForest,CRSDepTime_minutes,0.04068973932384537
+RandomForest,CRSArrTime_minutes,0.021173357363319826
+RandomForest,Month_sin,0.00023999967477506055
+RandomForest,Month_cos,0.0006054534195021809
+RandomForest,DayOfWeek_sin,0.00024876665832648044
+RandomForest,DayOfWeek_cos,8.235094320283645e-05
+RandomForest,DayofMonth_sin,0.0001627343794838421
+RandomForest,DayofMonth_cos,0.0002469509949893383
+RandomForest,Origin_mean_enc,0.0025272838484288137
+RandomForest,Dest_mean_enc,0.0035796854369213346
+RandomForest,EngineType_vec_Turbo-Fan,1.182325649194808e-05
+RandomForest,EngineType_vec_Turbo-Jet,1.6048599347105613e-05
+RandomForest,EngineType_vec_Other,4.1293801074211056e-08
+RandomForest,EngineType_vec_Turbo-Prop,4.309410469541705e-06
+RandomForest,AircraftType_vec_Fixed Wing Multi-Engine,2.585441399197914e-05
+RandomForest,AircraftType_vec_Other,2.152910913163246e-05
+RandomForest,Manufacturer_vec_BOEING,0.0007452996915970726
+RandomForest,Manufacturer_vec_MCDONNELL DOUGLAS,7.994092519709599e-05
+RandomForest,Manufacturer_vec_AIRBUS INDUSTRIE,1.2140191055863695e-05
+RandomForest,Manufacturer_vec_Other,2.4212937089500538e-05
+RandomForest,Manufacturer_vec_EMBRAER,2.7193734493416587e-05
+RandomForest,Manufacturer_vec_BOMBARDIER INC,9.087399436302564e-06
+RandomForest,Manufacturer_vec_MCDONNELL DOUGLAS AIRCRAFT CO,8.440880192626434e-07
+RandomForest,Manufacturer_vec_AIRBUS,6.274051069739706e-05
+RandomForest,Manufacturer_vec_DOUGLAS,3.0200238726252707e-05
+RandomForest,Manufacturer_vec_CANADAIR,3.684922953705152e-07
+RandomForest,Model_mean_enc,0.0005972737056948527
+RandomForest,Year_vec_2008,0.0006433545746080025
+RandomForest,Year_vec_1999,0.0009359431740067687
+RandomForest,PlaneIssueYear_mean_enc,0.00017616797428820843
